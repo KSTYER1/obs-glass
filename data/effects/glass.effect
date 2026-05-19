@@ -1,0 +1,332 @@
+// LucidGlass Effect v1.0.0
+// Portiert fuer obs-glass Plugin (eigenstaendige Source).
+// Originalshader: Andi Stone (Andilippi), basierend auf 4eckme / Shadertoy.
+
+// =============================================================================
+// UNIFORMS — werden per C-Code (glass-source.c) gesetzt
+// =============================================================================
+
+uniform float4x4 ViewProj;
+uniform texture2d image;     // Hintergrund-Textur (vom Benutzer gewaehlte Source)
+uniform float2    uv_size;   // Dimensionen der Hintergrund-Textur in Pixeln
+
+uniform float  LensPositionX;
+uniform float  LensPositionY;
+uniform bool   TransparentBackground;
+
+uniform float  shape_width;
+uniform float  shape_height;
+uniform float  corner_radius;
+uniform float  FeatheringPx;
+
+uniform int    BlurStrength;
+uniform float  BlurIntensity;
+uniform float  FrostStrength;
+uniform float4 TintColor;
+uniform float  TintStrength;
+
+uniform float  DistortionEdgeThicknessPx;
+uniform float  MaxDistortionAmount;
+uniform float  DistortionFalloffPower;
+uniform float  MagnificationAmount;
+
+uniform bool   EnableChromaticAberration;
+uniform float  ChromaticStrength;
+uniform float  ChromaticThickness;
+uniform float  ChromaticFalloff;
+
+uniform bool   EnableGlow;
+uniform float4 GlowColor;
+uniform float  GlowBaseSpreadPx;
+uniform float  GlowFalloffPower;
+uniform bool   EnableDirectionalGlow;
+uniform float  GlowDirectionAngle;
+uniform float  GlowDirectionalSpread;
+uniform float  GlowDirectionalSoftness;
+
+uniform bool   EnableInnerGlow;
+uniform float4 InnerGlowColor;
+uniform float  InnerGlowSpreadPx;
+uniform float  InnerGlowFalloffPower;
+uniform bool   EnableDirectionalInnerGlow;
+uniform float  InnerGlowDirectionAngle;
+uniform float  InnerGlowDirectionalSpread;
+uniform float  InnerGlowDirectionalSoftness;
+
+uniform bool   EnableDropShadow;
+uniform float4 ShadowColor;
+uniform float  ShadowOffsetX;
+uniform float  ShadowOffsetY;
+uniform float  ShadowBlur;
+uniform float  ShadowOpacity;
+
+// =============================================================================
+// SAMPLER
+// =============================================================================
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+// =============================================================================
+// VERTEX / PIXEL STRUCTS
+// =============================================================================
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+// =============================================================================
+// VERTEX SHADER
+// =============================================================================
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut v_out;
+    v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    v_out.uv  = v_in.uv;
+    return v_out;
+}
+
+// =============================================================================
+// HILFSFUNKTIONEN (identisch mit lucid-glass.shader)
+// =============================================================================
+
+#define EPSILON 0.0001
+
+float2 mirror_uv(float2 uv) {
+    return 1.0 - abs(frac(uv * 0.5) * 2.0 - 1.0);
+}
+
+float2 apply_frost(float2 uv, float strength, float2 size) {
+    if (strength <= EPSILON) return uv;
+    float mult = strength / max(size.x, size.y);
+    float2 p = uv * 1000.0;
+    float rx = frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+    float ry = frac(sin(dot(p, float2(78.233, 12.9898))) * 43758.5453);
+    return uv + (float2(rx, ry) - 0.5) * mult;
+}
+
+float get_sdf(float2 p, float2 dim, float r, float n) {
+    float2 half_dim = dim * 0.5;
+    if (r < 0.001) {
+        float2 d = abs(p) - half_dim;
+        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+    }
+    float2 d = abs(p) - (half_dim - r);
+    float inside = min(max(d.x, d.y), 0.0);
+    d = max(d, 0.0);
+    if (abs(n - 2.0) < 0.01) return inside + length(d) - r;
+    float2 u = d / r;
+    float sup = pow(pow(abs(u.x), n) + pow(abs(u.y), n), 1.0 / n);
+    return inside + r * (sup - 1.0);
+}
+
+float get_angle_mask(float current_angle, float target, float spread, float soft) {
+    float diff1 = abs(current_angle - target);
+    if (diff1 > 180.0) diff1 = 360.0 - diff1;
+
+    float target2 = fmod(target + 180.0, 360.0);
+    float diff2 = abs(current_angle - target2);
+    if (diff2 > 180.0) diff2 = 360.0 - diff2;
+
+    float diff = min(diff1, diff2);
+    float halfSpread = spread * 0.5;
+
+    if (diff > halfSpread) return 0.0;
+    if (soft <= EPSILON) return 1.0;
+
+    float range = halfSpread * soft;
+    float start = halfSpread - range;
+
+    return 1.0 - smoothstep(start, halfSpread, diff);
+}
+
+// =============================================================================
+// PIXEL SHADER (Glass-Logik, identisch mit lucid-glass.shader)
+// =============================================================================
+
+float4 PSGlass(VertDataOut v_in) : TARGET
+{
+    float2 uv = v_in.uv;
+    float2 pos = float2(LensPositionX, LensPositionY);
+    float2 dim = float2(max(shape_width, 1.0), max(shape_height, 1.0));
+
+    // 1. Form-SDF
+    float2 p = (uv * uv_size) - pos;
+    float r = max(corner_radius, 0.0);
+    float sdf = get_sdf(p, dim, r, 2.0);
+
+    // 2. Weichzeichnung -> Form-Alpha
+    float feather = max(FeatheringPx, 0.0);
+    float alpha = (feather < 0.001) ?
+        step(sdf, 0.0) : saturate(0.5 - sdf / feather);
+
+    // 3. Winkel vorberechnen (nur wenn benoetigt)
+    float angle = 0.0;
+    if (EnableDirectionalGlow || EnableDirectionalInnerGlow) {
+        angle = degrees(atan2(p.y, p.x));
+        if (angle < 0.0) angle += 360.0;
+    }
+
+    // 4. Schlagschatten
+    float4 col_shadow = float4(0.0, 0.0, 0.0, 0.0);
+    if (EnableDropShadow && ShadowOpacity > 0.0) {
+        float2 p_sh = p - float2(ShadowOffsetX, ShadowOffsetY);
+        float sdf_sh = get_sdf(p_sh, dim, r, 2.0);
+        float sh_blur = max(ShadowBlur, 0.001);
+        float val = exp(-(max(sdf_sh, 0.0) * max(sdf_sh, 0.0)) / (2.0 * sh_blur * sh_blur));
+        col_shadow = float4(ShadowColor.rgb, ShadowColor.a * val * ShadowOpacity);
+    }
+
+    // 5. Aeusseres Leuchten
+    float4 col_glow = float4(0.0, 0.0, 0.0, 0.0);
+    if (EnableGlow && GlowColor.a > 0.0) {
+        float dist = max(sdf, 0.0);
+        float spread = max(GlowBaseSpreadPx, 0.001);
+        if (dist < spread) {
+            float val = pow(saturate(1.0 - dist / spread), max(GlowFalloffPower, 0.01));
+            if (EnableDirectionalGlow) {
+                val *= get_angle_mask(angle, GlowDirectionAngle, GlowDirectionalSpread,
+                                      GlowDirectionalSoftness);
+            }
+            col_glow = float4(GlowColor.rgb, val * GlowColor.a);
+        }
+    }
+
+    // Fruehzeitiger Ausstieg wenn nichts beitraegt
+    if (alpha < 0.001 && col_shadow.a < 0.001 && col_glow.a < 0.001) {
+        return TransparentBackground ?
+            float4(0.0, 0.0, 0.0, 0.0) :
+            image.Sample(textureSampler, uv);
+    }
+
+    // 6. Glaseffekt (nur wo die Form liegt)
+    float3 rgb_glass = float3(0.0, 0.0, 0.0);
+    if (alpha > 0.001) {
+        // Linsenverzerrung + Vergroesserung
+        float dist_edge  = -sdf;
+        float dist_thick = max(DistortionEdgeThicknessPx, 0.01);
+        float ramp       = saturate(1.0 - (dist_edge / dist_thick));
+        float intensity  = pow(ramp, max(DistortionFalloffPower, 0.01));
+        float zoom       = 1.0 - intensity * MaxDistortionAmount;
+        float mag        = 1.0 / max(MagnificationAmount, 0.1);
+        float total_zoom = clamp(zoom * mag, -5.0, 10.0);
+
+        float2 center_uv = pos / uv_size;
+        float2 dist_uv   = (uv - center_uv) * total_zoom + center_uv;
+
+        // Gauss-Blur + optionale chromatische Aberration
+        int   radius = (BlurStrength == 0) ? 1 : ((BlurStrength == 1) ? 2 : 3);
+        float b_int  = (BlurStrength == 0) ? 0.5 : ((BlurStrength == 1) ? 1.0 : 1.5);
+        float sigma  = b_int * BlurIntensity;
+        float sigma2 = 2.0 * sigma * sigma;
+
+        float2 ca_off[3];
+        ca_off[0] = float2(0.0, 0.0);
+        ca_off[1] = float2(0.0, 0.0);
+        ca_off[2] = float2(0.0, 0.0);
+
+        bool do_ca = EnableChromaticAberration && ChromaticStrength > 0.0;
+        if (do_ca) {
+            float ca_ramp = saturate(1.0 - abs(sdf) / max(ChromaticThickness, 0.001));
+            float ca_str  = ChromaticStrength * pow(ca_ramp, max(ChromaticFalloff, 0.1)) * 0.005;
+            float p_len   = length(p);
+            float2 dir    = (p_len > EPSILON) ? p / p_len : float2(0.0, 0.0);
+            ca_off[0] = dir * ca_str;
+            ca_off[1] = dir * ca_str * 0.5;
+            ca_off[2] = dir * ca_str * 0.2;
+        }
+
+        float2 base_uv = apply_frost(dist_uv, FrostStrength, uv_size);
+        float3 acc     = float3(0.0, 0.0, 0.0);
+        float  w_total = 0.0;
+        float2 texel   = 1.0 / uv_size;
+
+        [loop] for (int x = -radius; x <= radius; x++) {
+            [loop] for (int y = -radius; y <= radius; y++) {
+                float  d2  = float(x * x + y * y);
+                float  w   = exp(-d2 / sigma2);
+                float2 off = float2(x, y) * texel * sigma;
+                if (do_ca) {
+                    acc.x += image.Sample(textureSampler, mirror_uv(base_uv + ca_off[0] + off)).x * w;
+                    acc.y += image.Sample(textureSampler, mirror_uv(base_uv + ca_off[1] + off)).y * w;
+                    acc.z += image.Sample(textureSampler, mirror_uv(base_uv + ca_off[2] + off)).z * w;
+                } else {
+                    acc += image.Sample(textureSampler, mirror_uv(base_uv + off)).rgb * w;
+                }
+                w_total += w;
+            }
+        }
+        rgb_glass = (w_total > 0.001) ?
+            acc / w_total :
+            image.Sample(textureSampler, base_uv).rgb;
+
+        // Toenung
+        if (TintStrength > 0.0) {
+            rgb_glass = lerp(rgb_glass, TintColor.rgb, TintStrength);
+        }
+
+        // Inneres Leuchten
+        if (EnableInnerGlow && InnerGlowColor.a > 0.0) {
+            float dist_in   = max(-sdf, 0.0);
+            float spread_in = max(InnerGlowSpreadPx, 0.001);
+            if (dist_in < spread_in && sdf < 0.0) {
+                float val = pow(saturate(1.0 - dist_in / spread_in),
+                                max(InnerGlowFalloffPower, 0.01));
+                if (EnableDirectionalInnerGlow) {
+                    val *= get_angle_mask(angle, InnerGlowDirectionAngle,
+                                          InnerGlowDirectionalSpread,
+                                          InnerGlowDirectionalSoftness);
+                }
+                rgb_glass = lerp(rgb_glass, InnerGlowColor.rgb, val * InnerGlowColor.a);
+            }
+        }
+    }
+
+    // 7. Komposition: Basis -> Schatten -> Aeusseres Leuchten -> Glas
+    float4 src    = image.Sample(textureSampler, uv);
+    float3 out_rgb = TransparentBackground ? float3(0.0, 0.0, 0.0) : src.rgb;
+    float  out_a   = TransparentBackground ? 0.0 : src.a;
+
+    if (col_shadow.a > 0.0) {
+        out_rgb = lerp(out_rgb, col_shadow.rgb, col_shadow.a);
+        out_a   = max(out_a, col_shadow.a);
+    }
+
+    if (col_glow.a > 0.0) {
+        out_rgb = lerp(out_rgb, col_glow.rgb, col_glow.a);
+        out_a   = max(out_a, col_glow.a);
+    }
+
+    out_rgb = lerp(out_rgb, rgb_glass, alpha);
+
+    if (TransparentBackground) {
+        float final_a = alpha + col_glow.a * (1.0 - alpha);
+        final_a = final_a + col_shadow.a * (1.0 - final_a);
+        return float4(out_rgb, final_a);
+    }
+
+    return float4(out_rgb, src.a);
+}
+
+// =============================================================================
+// TECHNIQUE
+// =============================================================================
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader  = PSGlass(v_in);
+    }
+}

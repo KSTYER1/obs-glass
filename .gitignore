@@ -1,0 +1,26 @@
+# Build-Output
+build_x64/
+build_*/
+.deps/
+
+# Release-Artefakte (kommen via GitHub Releases)
+dist/
+
+# Referenz / Third-Party Studien-Material (lokal behalten, nicht im Repo)
+reference/
+
+# IDE / Editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+CMakeUserPresets.json
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Generierte Header
+src/plugin-support.c
