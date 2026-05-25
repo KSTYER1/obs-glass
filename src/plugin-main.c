@@ -1,6 +1,6 @@
 /*
  * obs-glass — Glass Source Plugin fuer OBS Studio.
- * Copyright (C) 2026 K_STYER, GPLv2 oder spaeter.
+ * Copyright (C) 2026 K_STYER1, GPLv2 oder spaeter.
  */
 
 #include <obs-module.h>
@@ -22,7 +22,7 @@ MODULE_EXPORT const char *obs_module_name(void)
 
 MODULE_EXPORT const char *obs_module_author(void)
 {
-	return "K_STYER";
+	return "K_STYER1";
 }
 
 extern struct obs_source_info glass_source_info;

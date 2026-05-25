@@ -1,7 +1,7 @@
 /*
  * obs-glass — eigenstaendige Glass-Source fuer OBS Studio.
  * Implementiert den LucidGlass-Effekt als frei platzierbares Szenen-Element.
- * Copyright (C) 2026 K_STYER, GPLv2 oder spaeter.
+ * Copyright (C) 2026 K_STYER1, GPLv2 oder spaeter.
  */
 
 #include <obs-module.h>

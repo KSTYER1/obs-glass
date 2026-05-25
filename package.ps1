@@ -65,7 +65,7 @@ $nsiScript = @"
 Unicode True
 !define PLUGIN_NAME    "obs-glass"
 !define PLUGIN_VERSION "$Version"
-!define PUBLISHER      "obs-glass contributors"
+!define PUBLISHER      "K_STYER1"
 
 Name            "`${PLUGIN_NAME} `${PLUGIN_VERSION}"
 OutFile         "obs-glass-`${PLUGIN_VERSION}-installer.exe"

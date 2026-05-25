@@ -138,7 +138,7 @@ tracker.
 
 GPL-2.0-or-later.
 
-## Credits
+## Third-Party Attribution
 
 LucidGlass shader by Andi Stone (Andilippi), based on prior work by 4eckme and
 references on Shadertoy. This plugin ports that shader into a standalone OBS
