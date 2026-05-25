@@ -112,14 +112,14 @@ review. The folder mirrors the OBS-ready release layout:
 dist/
   obs-glass.dll
   obs-glass.nsi
-  obs-glass-1.0.1-installer.exe
-  obs-glass-1.0.1-portable.zip
+  obs-glass-1.0.2-installer.exe
+  obs-glass-1.0.2-portable.zip
   effects/
     glass.effect
   locale/
     en-US.ini
     de-DE.ini
-  obs-glass-1.0.1-portable/
+  obs-glass-1.0.2-portable/
     obs-plugins/64bit/obs-glass.dll
     data/obs-plugins/obs-glass/effects/glass.effect
     data/obs-plugins/obs-glass/locale/en-US.ini
@@ -135,11 +135,19 @@ Use `-DeployUserPlugin` only when explicitly installing into the
 
 ## Version History
 
+### 1.0.2
+
+- Fixed OBS source registration failure caused by setting
+  `OBS_SOURCE_COMPOSITE` without an `audio_render` callback.
+- Restored Glass availability in the OBS source list and existing scene
+  source control.
+- Added a static guard to prevent this load-blocking flag combination from
+  returning.
+
 ### 1.0.1
 
 - Fixed thread-safe background-source updates while rendering.
-- Declared Glass as a composite source and enumerates its selected
-  background source for OBS source tracking.
+- Enumerates the selected background source for OBS source tracking.
 - Avoids drawing stale background textures when the intermediate render
   target cannot be started.
 - Removed the unused obs-frontend-api link dependency.

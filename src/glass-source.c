@@ -816,7 +816,7 @@ static void glass_source_render(void *data, gs_effect_t *effect)
 struct obs_source_info glass_source_info = {
 	.id             = "glass_source",
 	.type           = OBS_SOURCE_TYPE_INPUT,
-	.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_COMPOSITE,
+	.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
 	.get_name       = glass_source_get_name,
 	.create         = glass_source_create,
 	.destroy        = glass_source_destroy,

@@ -6,7 +6,7 @@ Glass
 
 ## Version
 
-1.0.1
+1.0.2
 
 ## Category
 
@@ -40,7 +40,7 @@ https://github.com/KSTYER1/obs-glass
 
 ## Download URL
 
-https://github.com/KSTYER1/obs-glass/releases/tag/v1.0.1
+https://github.com/KSTYER1/obs-glass/releases/tag/v1.0.2
 
 ## Overview
 
@@ -77,9 +77,9 @@ searchable dropdown of every scene and source in the project.
 
 Download the Windows x64 release. Two options:
 
-1. Run `obs-glass-1.0.1-installer.exe`. By default it installs into your OBS
+1. Run `obs-glass-1.0.2-installer.exe`. By default it installs into your OBS
    user plugin folder.
-2. Or extract `obs-glass-1.0.1-portable.zip` into your OBS Studio installation
+2. Or extract `obs-glass-1.0.2-portable.zip` into your OBS Studio installation
    folder.
 
 The final layout should include:
@@ -102,11 +102,19 @@ Restart OBS after installation. The source appears under `+ -> Glass`.
 5. Place the Glass source anywhere in the scene's source list to control its
    z-order on the canvas.
 
+## Version 1.0.2
+
+- Fixed OBS source registration failure caused by setting
+  `OBS_SOURCE_COMPOSITE` without an `audio_render` callback.
+- Restored Glass availability in the OBS source list and existing scene
+  source control.
+- Added a static guard to prevent this load-blocking flag combination from
+  returning.
+
 ## Version 1.0.1
 
 - Fixed thread-safe background-source updates while rendering.
-- Declared Glass as a composite source and enumerates its selected
-  background source for OBS source tracking.
+- Enumerates the selected background source for OBS source tracking.
 - Avoids drawing stale background textures when the intermediate render
   target cannot be started.
 - Removed the unused obs-frontend-api link dependency.
