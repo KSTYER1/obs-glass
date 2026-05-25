@@ -8,6 +8,7 @@
 #include <graphics/graphics.h>
 #include <graphics/vec2.h>
 #include <graphics/vec4.h>
+#include <util/threading.h>
 #include <plugin-support.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,7 @@ static inline void packed_to_vec4(long long packed, struct vec4 *out)
 struct glass_source {
 	obs_source_t *source;
 	obs_weak_source_t *target_weak;       /* Hintergrund-Source (kein Zyklus) */
+	pthread_mutex_t target_mutex;
 
 	/* GPU-Ressourcen */
 	gs_effect_t    *effect;
@@ -190,6 +192,12 @@ static void *glass_source_create(obs_data_t *settings, obs_source_t *source)
 	ctx->width  = 1920;
 	ctx->height = 1080;
 
+	if (pthread_mutex_init(&ctx->target_mutex, NULL) != 0) {
+		obs_log(LOG_ERROR, "glass-source: target mutex konnte nicht initialisiert werden");
+		bfree(ctx);
+		return NULL;
+	}
+
 	char *path = obs_module_file("effects/glass.effect");
 	obs_enter_graphics();
 	ctx->effect    = gs_effect_create_from_file(path, NULL);
@@ -203,6 +211,7 @@ static void *glass_source_create(obs_data_t *settings, obs_source_t *source)
 		gs_effect_destroy(ctx->effect);
 		gs_texrender_destroy(ctx->texrender);
 		obs_leave_graphics();
+		pthread_mutex_destroy(&ctx->target_mutex);
 		bfree(ctx);
 		return NULL;
 	}
@@ -220,13 +229,20 @@ static void *glass_source_create(obs_data_t *settings, obs_source_t *source)
 static void glass_source_destroy(void *data)
 {
 	struct glass_source *ctx = data;
+	obs_weak_source_t *old_target;
 
 	obs_enter_graphics();
 	gs_effect_destroy(ctx->effect);
 	gs_texrender_destroy(ctx->texrender);
 	obs_leave_graphics();
 
-	obs_weak_source_release(ctx->target_weak);
+	pthread_mutex_lock(&ctx->target_mutex);
+	old_target = ctx->target_weak;
+	ctx->target_weak = NULL;
+	pthread_mutex_unlock(&ctx->target_mutex);
+
+	obs_weak_source_release(old_target);
+	pthread_mutex_destroy(&ctx->target_mutex);
 	bfree(ctx);
 }
 
@@ -236,8 +252,7 @@ static void glass_source_update(void *data, obs_data_t *settings)
 
 	/* Hintergrund-Source aktualisieren */
 	const char *target_name = obs_data_get_string(settings, "target_source");
-	obs_weak_source_release(ctx->target_weak);
-	ctx->target_weak = NULL;
+	obs_weak_source_t *new_target = NULL;
 
 	if (target_name && *target_name) {
 		obs_source_t *target = obs_get_source_by_name(target_name);
@@ -246,7 +261,7 @@ static void glass_source_update(void *data, obs_data_t *settings)
 			 * Zyklen (Szene enthaelt diese Quelle) sind durch das
 			 * ctx->rendering-Flag in glass_source_render abgesichert. */
 			if (target != ctx->source) {
-				ctx->target_weak = obs_source_get_weak_source(target);
+				new_target = obs_source_get_weak_source(target);
 			} else {
 				obs_log(LOG_WARNING,
 					"glass-source: direkte Selbst-Referenz "
@@ -255,6 +270,12 @@ static void glass_source_update(void *data, obs_data_t *settings)
 			obs_source_release(target);
 		}
 	}
+
+	pthread_mutex_lock(&ctx->target_mutex);
+	obs_weak_source_t *old_target = ctx->target_weak;
+	ctx->target_weak = new_target;
+	pthread_mutex_unlock(&ctx->target_mutex);
+	obs_weak_source_release(old_target);
 
 	/* Alle Glass-Parameter einlesen */
 	ctx->pos_x                = (float)obs_data_get_double(settings, "pos_x");
@@ -416,7 +437,8 @@ static bool icontains(const char *hay, const char *needle)
 }
 
 /* Source-Liste aufbauen (gefiltert nach filter, "" = alle) */
-static void populate_sources_filtered(obs_property_t *list, const char *filter)
+static void populate_sources_filtered(obs_property_t *list, const char *filter,
+				      const char *skip_name)
 {
 	obs_property_list_clear(list);
 	obs_property_list_add_string(list, obs_module_text("None"), "");
@@ -428,8 +450,10 @@ static void populate_sources_filtered(obs_property_t *list, const char *filter)
 	if (names.count > 0) {
 		qsort(names.items, names.count, sizeof(char *), name_compare);
 		for (size_t i = 0; i < names.count; i++) {
-			if (icontains(names.items[i], filter))
+			if ((!skip_name || strcmp(names.items[i], skip_name) != 0) &&
+			    icontains(names.items[i], filter)) {
 				obs_property_list_add_string(list, names.items[i], names.items[i]);
+			}
 			bfree(names.items[i]);
 		}
 		bfree(names.items);
@@ -437,13 +461,15 @@ static void populate_sources_filtered(obs_property_t *list, const char *filter)
 }
 
 /* Callback: Suchfeld geaendert -> Liste neu aufbauen */
-static bool on_source_search_changed(obs_properties_t *props,
+static bool on_source_search_changed(void *priv, obs_properties_t *props,
 				      obs_property_t *p, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(p);
+	struct glass_source *ctx = priv;
 	obs_property_t *list = obs_properties_get(props, "target_source");
 	const char *filter   = obs_data_get_string(settings, "source_search");
-	populate_sources_filtered(list, filter);
+	const char *self_name = ctx ? obs_source_get_name(ctx->source) : NULL;
+	populate_sources_filtered(list, filter, self_name);
 	return true;
 }
 
@@ -521,7 +547,7 @@ static obs_properties_t *glass_source_properties(void *data)
 	/* --- Suchfeld + Hintergrund-Source (alphabetisch sortiert, inkl. Szenen) --- */
 	obs_property_t *search = obs_properties_add_text(
 		props, "source_search", TEXT("SourceSearch"), OBS_TEXT_DEFAULT);
-	obs_property_set_modified_callback(search, on_source_search_changed);
+	obs_property_set_modified_callback2(search, on_source_search_changed, ctx);
 
 	obs_property_t *src_list = obs_properties_add_list(
 		props, "target_source", TEXT("TargetSource"),
@@ -531,7 +557,8 @@ static obs_properties_t *glass_source_properties(void *data)
 	{
 		obs_data_t *s = ctx ? obs_source_get_settings(ctx->source) : NULL;
 		const char *f = s ? obs_data_get_string(s, "source_search") : "";
-		populate_sources_filtered(src_list, f);
+		const char *self_name = ctx ? obs_source_get_name(ctx->source) : NULL;
+		populate_sources_filtered(src_list, f, self_name);
 		if (s) obs_data_release(s);
 	}
 
@@ -620,6 +647,31 @@ static uint32_t glass_source_get_height(void *data)
 	return ((struct glass_source *)data)->height;
 }
 
+static obs_source_t *glass_source_get_target(struct glass_source *ctx)
+{
+	obs_source_t *target = NULL;
+
+	pthread_mutex_lock(&ctx->target_mutex);
+	if (ctx->target_weak)
+		target = obs_weak_source_get_source(ctx->target_weak);
+	pthread_mutex_unlock(&ctx->target_mutex);
+
+	return target;
+}
+
+static void glass_source_enum_active_sources(void *data,
+					     obs_source_enum_proc_t enum_callback,
+					     void *param)
+{
+	struct glass_source *ctx = data;
+	obs_source_t *target = glass_source_get_target(ctx);
+
+	if (target) {
+		enum_callback(ctx->source, target, param);
+		obs_source_release(target);
+	}
+}
+
 /* =========================================================================
  * video_render
  * ========================================================================= */
@@ -643,9 +695,7 @@ static void glass_source_render(void *data, gs_effect_t *effect)
 	 * damit die Szene unveraendert eingefangen wird.
 	 * Rekursionsschutz: ctx->rendering-Flag fängt re-entry ab, wenn die
 	 * Ziel-Szene diese Glass-Source enthält (siehe oben). */
-	obs_source_t *bg = ctx->target_weak
-			   ? obs_weak_source_get_source(ctx->target_weak)
-			   : NULL;
+	obs_source_t *bg = glass_source_get_target(ctx);
 	if (!bg) {
 		ctx->rendering = false;
 		return;
@@ -663,13 +713,18 @@ static void glass_source_render(void *data, gs_effect_t *effect)
 	gs_texrender_reset(ctx->texrender);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-	if (gs_texrender_begin(ctx->texrender, bg_w, bg_h)) {
-		struct vec4 clear_color = {0};
-		gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
-		gs_ortho(0.0f, (float)bg_w, 0.0f, (float)bg_h, -100.0f, 100.0f);
-		obs_source_video_render(bg);
-		gs_texrender_end(ctx->texrender);
+	if (!gs_texrender_begin(ctx->texrender, bg_w, bg_h)) {
+		gs_blend_state_pop();
+		obs_source_release(bg);
+		ctx->rendering = false;
+		return;
 	}
+
+	struct vec4 clear_color = {0};
+	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
+	gs_ortho(0.0f, (float)bg_w, 0.0f, (float)bg_h, -100.0f, 100.0f);
+	obs_source_video_render(bg);
+	gs_texrender_end(ctx->texrender);
 	gs_blend_state_pop();
 
 	obs_source_release(bg);
@@ -761,7 +816,7 @@ static void glass_source_render(void *data, gs_effect_t *effect)
 struct obs_source_info glass_source_info = {
 	.id             = "glass_source",
 	.type           = OBS_SOURCE_TYPE_INPUT,
-	.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
+	.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_COMPOSITE,
 	.get_name       = glass_source_get_name,
 	.create         = glass_source_create,
 	.destroy        = glass_source_destroy,
@@ -771,5 +826,6 @@ struct obs_source_info glass_source_info = {
 	.get_width      = glass_source_get_width,
 	.get_height     = glass_source_get_height,
 	.video_render   = glass_source_render,
+	.enum_active_sources = glass_source_enum_active_sources,
 	.icon_type      = OBS_ICON_TYPE_CUSTOM,
 };

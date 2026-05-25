@@ -8,7 +8,7 @@
     .\package.ps1 -Version "1.1.0" -DeployUserPlugin
 #>
 param(
-    [string]$Version = "1.0.0",
+    [string]$Version = "1.0.1",
     [switch]$DeployUserPlugin
 )
 
@@ -32,6 +32,10 @@ if (-not (Test-Path $DLL)) { throw "Build fehlgeschlagen: $DLL nicht gefunden" }
 # 2. Portable-Ordner aufbauen
 # ---------------------------------------------------------------------------
 Write-Host "`n[2/4] Erzeuge Portable-Ordner..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force $DIST | Out-Null
+Remove-Item "$DIST\obs-glass-*-portable" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "$DIST\obs-glass-*-portable.zip" -Force -ErrorAction SilentlyContinue
+Remove-Item "$DIST\obs-glass-*-installer.exe" -Force -ErrorAction SilentlyContinue
 $portName = "obs-glass-$Version-portable"
 $portDir  = "$DIST\$portName"
 

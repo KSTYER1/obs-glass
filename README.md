@@ -37,7 +37,7 @@ Recommended installer:
 
 1. Download the `*-installer.exe` file from the latest GitHub release.
 2. Close OBS Studio.
-3. Run the installer and select your OBS Studio installation folder.
+3. Run the installer. By default it installs into your OBS user plugin folder.
 4. Start OBS Studio again.
 
 Portable or manual installation:
@@ -97,6 +97,12 @@ The project uses the
 [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate) build
 structure.
 
+Run the static review guard after source changes:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\obs-glass-static.ps1
+```
+
 ## Local Dist Output
 
 Completed Windows builds should also have a local `dist/` folder for packaging
@@ -106,14 +112,14 @@ review. The folder mirrors the OBS-ready release layout:
 dist/
   obs-glass.dll
   obs-glass.nsi
-  obs-glass-1.0.0-installer.exe
-  obs-glass-1.0.0-portable.zip
+  obs-glass-1.0.1-installer.exe
+  obs-glass-1.0.1-portable.zip
   effects/
     glass.effect
   locale/
     en-US.ini
     de-DE.ini
-  obs-glass-1.0.0-portable/
+  obs-glass-1.0.1-portable/
     obs-plugins/64bit/obs-glass.dll
     data/obs-plugins/obs-glass/effects/glass.effect
     data/obs-plugins/obs-glass/locale/en-US.ini
@@ -128,6 +134,16 @@ Use `-DeployUserPlugin` only when explicitly installing into the
 `%APPDATA%\obs-studio\plugins\obs-glass` user-plugin path.
 
 ## Version History
+
+### 1.0.1
+
+- Fixed thread-safe background-source updates while rendering.
+- Declared Glass as a composite source and enumerates its selected
+  background source for OBS source tracking.
+- Avoids drawing stale background textures when the intermediate render
+  target cannot be started.
+- Removed the unused obs-frontend-api link dependency.
+- Hides the Glass source itself from the background-source picker.
 
 ### 1.0.0
 
