@@ -5,9 +5,11 @@
 .USAGE
     .\package.ps1
     .\package.ps1 -Version "1.1.0"
+    .\package.ps1 -Version "1.1.0" -DeployUserPlugin
 #>
 param(
-    [string]$Version = "1.0.0"
+    [string]$Version = "1.0.0",
+    [switch]$DeployUserPlugin
 )
 
 $ErrorActionPreference = "Stop"
@@ -160,7 +162,7 @@ if (-not (Test-Path $NSIS)) {
 }
 
 # ---------------------------------------------------------------------------
-# 5. In BEIDE Pfade deployen (OBS muss geschlossen sein)
+# 5. In OBS-Beta deployen (OBS muss geschlossen sein)
 # ---------------------------------------------------------------------------
 Write-Host "`n[5/5] Deploye zu OBS..." -ForegroundColor Cyan
 
@@ -180,18 +182,22 @@ if (Test-Path $obsBeta) {
     Write-Warning "Portable OBS nicht gefunden: $obsBeta"
 }
 
-# User-Plugin-Pfad (%APPDATA%\obs-studio\plugins\obs-glass\)
-$obsUser  = "$env:APPDATA\obs-studio\plugins\obs-glass"
-$usr64    = "$obsUser\bin\64bit"
-$usrData  = "$obsUser\data"
-New-Item -ItemType Directory -Force "$usr64"            | Out-Null
-New-Item -ItemType Directory -Force "$usrData\locale"   | Out-Null
-New-Item -ItemType Directory -Force "$usrData\effects"  | Out-Null
-Copy-Item $DLL                         "$usr64\obs-glass.dll"    -Force
-Copy-Item "$DATA\locale\en-US.ini"     "$usrData\locale\"        -Force
-Copy-Item "$DATA\locale\de-DE.ini"     "$usrData\locale\"        -Force
-Copy-Item "$DATA\effects\glass.effect" "$usrData\effects\"       -Force
-Write-Host "  -> User-Plugin ($obsUser)" -ForegroundColor Green
+if ($DeployUserPlugin) {
+    # User-Plugin-Pfad (%APPDATA%\obs-studio\plugins\obs-glass\)
+    $obsUser  = "$env:APPDATA\obs-studio\plugins\obs-glass"
+    $usr64    = "$obsUser\bin\64bit"
+    $usrData  = "$obsUser\data"
+    New-Item -ItemType Directory -Force "$usr64"            | Out-Null
+    New-Item -ItemType Directory -Force "$usrData\locale"   | Out-Null
+    New-Item -ItemType Directory -Force "$usrData\effects"  | Out-Null
+    Copy-Item $DLL                         "$usr64\obs-glass.dll"    -Force
+    Copy-Item "$DATA\locale\en-US.ini"     "$usrData\locale\"        -Force
+    Copy-Item "$DATA\locale\de-DE.ini"     "$usrData\locale\"        -Force
+    Copy-Item "$DATA\effects\glass.effect" "$usrData\effects\"       -Force
+    Write-Host "  -> User-Plugin ($obsUser)" -ForegroundColor Green
+} else {
+    Write-Host "  -> User-Plugin uebersprungen (mit -DeployUserPlugin aktivieren)" -ForegroundColor DarkGray
+}
 
 # ---------------------------------------------------------------------------
 # Zusammenfassung

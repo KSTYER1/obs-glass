@@ -97,6 +97,36 @@ The project uses the
 [obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate) build
 structure.
 
+## Local Dist Output
+
+Completed Windows builds should also have a local `dist/` folder for packaging
+review. The folder mirrors the OBS-ready release layout:
+
+```text
+dist/
+  obs-glass.dll
+  obs-glass.nsi
+  obs-glass-1.0.0-installer.exe
+  obs-glass-1.0.0-portable.zip
+  effects/
+    glass.effect
+  locale/
+    en-US.ini
+    de-DE.ini
+  obs-glass-1.0.0-portable/
+    obs-plugins/64bit/obs-glass.dll
+    data/obs-plugins/obs-glass/effects/glass.effect
+    data/obs-plugins/obs-glass/locale/en-US.ini
+    data/obs-plugins/obs-glass/locale/de-DE.ini
+```
+
+`dist/` is generated from a verified build and is ignored by Git. Publish the
+installer EXE and portable ZIP as release assets.
+
+`package.ps1` deploys to `C:\Users\Awet\Desktop\OBS 32.1 BETA` by default.
+Use `-DeployUserPlugin` only when explicitly installing into the
+`%APPDATA%\obs-studio\plugins\obs-glass` user-plugin path.
+
 ## Version History
 
 ### 1.0.0
