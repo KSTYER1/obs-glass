@@ -21,6 +21,10 @@ moved, resized, and layered like any other scene item.
 - Outer glow with optional bi-directional shaping (angle, spread, softness).
 - Inner glow with optional bi-directional shaping (angle, spread, softness).
 - Drop shadow with offset, blur, opacity, and color.
+- Liquid Motion Pack with cinematic Liquid Drift presets and simple strength,
+  speed, depth, and seed controls.
+- Grouped source properties so background, position, shape, material, lens,
+  color, glow, shadow, and motion controls are easier to scan.
 - Transparent-background mode so only the shape contributes to the canvas.
 - Searchable background-source picker with alphabetical scene and source list.
 - German and English locales.
@@ -112,14 +116,14 @@ review. The folder mirrors the OBS-ready release layout:
 dist/
   obs-glass.dll
   obs-glass.nsi
-  obs-glass-1.0.2-installer.exe
-  obs-glass-1.0.2-portable.zip
+  obs-glass-1.1.0-installer.exe
+  obs-glass-1.1.0-portable.zip
   effects/
     glass.effect
   locale/
     en-US.ini
     de-DE.ini
-  obs-glass-1.0.2-portable/
+  obs-glass-1.1.0-portable/
     obs-plugins/64bit/obs-glass.dll
     data/obs-plugins/obs-glass/effects/glass.effect
     data/obs-plugins/obs-glass/locale/en-US.ini
@@ -129,11 +133,39 @@ dist/
 `dist/` is generated from a verified build and is ignored by Git. Publish the
 installer EXE and portable ZIP as release assets.
 
-`package.ps1` deploys to `C:\Users\Awet\Desktop\OBS 32.1 BETA` by default.
+`package.ps1` deploys to `OBS 32.1 BETA` on the current user's Desktop by default.
+Use `-SkipDeploy` when OBS is running and only package artifacts are needed.
 Use `-DeployUserPlugin` only when explicitly installing into the
 `%APPDATA%\obs-studio\plugins\obs-glass` user-plugin path.
 
 ## Version History
+
+### 1.1.0
+
+- Added Liquid Motion Pack with cinematic Liquid Drift presets: Aurora Drift,
+  Crystal Warp, Heat Haze, and Deep Ripple.
+- Added simple Liquid Motion controls for strength, speed, depth, and seed.
+- Grouped source properties into focused sections for a cleaner settings UI.
+- Keeps Liquid Motion disabled by default so existing saved Glass sources load
+  unchanged.
+
+### 1.0.4
+
+- Fixed reload restoration so saved Glass sources re-read their settings during
+  source creation and resolve their selected background source again after OBS
+  has created all sources in the scene collection.
+- Allows recursive scene-backed glass setups to load by keeping OBS'
+  active-source recursion guard from rejecting a Glass source whose selected
+  scene target contains that same Glass source.
+- Replaced a Windows-only source-search comparison with OBS' portable
+  case-insensitive string helper.
+
+### 1.0.3
+
+- Added Center X, Center Y, and Center Both buttons for quickly centering the
+  glass position against the selected background source.
+- Falls back to the last known output size when no background source is
+  available.
 
 ### 1.0.2
 

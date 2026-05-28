@@ -6,10 +6,12 @@
     .\package.ps1
     .\package.ps1 -Version "1.1.0"
     .\package.ps1 -Version "1.1.0" -DeployUserPlugin
+    .\package.ps1 -SkipDeploy
 #>
 param(
-    [string]$Version = "1.0.2",
-    [switch]$DeployUserPlugin
+    [string]$Version = "1.1.0",
+    [switch]$DeployUserPlugin,
+    [switch]$SkipDeploy
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +27,7 @@ if (-not (Test-Path $NSIS)) { $NSIS = "${env:ProgramFiles}\NSIS\makensis.exe" }
 # 1. Release bauen
 # ---------------------------------------------------------------------------
 Write-Host "`n[1/4] Baue Release..." -ForegroundColor Cyan
+cmake --preset windows-x64 | Where-Object { $_ -match "(error|warning|Configuring|Generating|Build files)" }
 cmake --build "$BUILD" --config Release | Where-Object { $_ -match "(error|warning|->)" }
 if (-not (Test-Path $DLL)) { throw "Build fehlgeschlagen: $DLL nicht gefunden" }
 
@@ -170,8 +173,16 @@ if (-not (Test-Path $NSIS)) {
 # ---------------------------------------------------------------------------
 Write-Host "`n[5/5] Deploye zu OBS..." -ForegroundColor Cyan
 
+if ($SkipDeploy) {
+    Write-Host "  -> Deploy uebersprungen (-SkipDeploy)" -ForegroundColor DarkGray
+    Write-Host "`n=== Fertig ===" -ForegroundColor Yellow
+    Write-Host "Ausgabe-Verzeichnis: $DIST"
+    Get-ChildItem $DIST -File | Select-Object Name, @{N="KB";E={[math]::Round($_.Length/1KB,1)}}
+    exit 0
+}
+
 # Portable OBS
-$obsBeta = "C:\Users\Awet\Desktop\OBS 32.1 BETA"
+$obsBeta = Join-Path ([Environment]::GetFolderPath("Desktop")) "OBS 32.1 BETA"
 if (Test-Path $obsBeta) {
     $dst64    = "$obsBeta\obs-plugins\64bit"
     $dstData  = "$obsBeta\data\obs-plugins\obs-glass"

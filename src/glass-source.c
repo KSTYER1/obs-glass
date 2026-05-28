@@ -8,6 +8,7 @@
 #include <graphics/graphics.h>
 #include <graphics/vec2.h>
 #include <graphics/vec4.h>
+#include <util/dstr.h>
 #include <util/threading.h>
 #include <plugin-support.h>
 #include <stdlib.h>
@@ -33,6 +34,7 @@ static inline void packed_to_vec4(long long packed, struct vec4 *out)
 struct glass_source {
 	obs_source_t *source;
 	obs_weak_source_t *target_weak;       /* Hintergrund-Source (kein Zyklus) */
+	char *target_name;                    /* Gespeicherter Zielname fuer load() */
 	pthread_mutex_t target_mutex;
 
 	/* GPU-Ressourcen */
@@ -84,6 +86,12 @@ struct glass_source {
 	gs_eparam_t *p_shadow_offset_y;
 	gs_eparam_t *p_shadow_blur;
 	gs_eparam_t *p_shadow_opacity;
+	gs_eparam_t *p_enable_liquid_motion;
+	gs_eparam_t *p_liquid_time;
+	gs_eparam_t *p_liquid_strength;
+	gs_eparam_t *p_liquid_speed;
+	gs_eparam_t *p_liquid_depth;
+	gs_eparam_t *p_liquid_seed;
 
 	/* Settings-Werte (aus update gelesen) */
 	float pos_x, pos_y;
@@ -111,6 +119,8 @@ struct glass_source {
 	bool enable_shadow;
 	long long shadow_color_packed;
 	float shadow_offset_x, shadow_offset_y, shadow_blur, shadow_opacity;
+	bool enable_liquid_motion;
+	float liquid_strength, liquid_speed, liquid_depth, liquid_seed, liquid_time;
 
 	/* Dynamische Ausgabe-Dimensionen (von der Hintergrund-Source) */
 	uint32_t width;
@@ -119,6 +129,13 @@ struct glass_source {
 	/* Schutz vor rekursivem Render (Glass in eigener Szene) */
 	bool rendering;
 };
+
+static obs_source_t *glass_source_get_target(struct glass_source *ctx);
+static bool glass_source_resolve_target(struct glass_source *ctx,
+					const char *target_name);
+static void glass_source_update(void *data, obs_data_t *settings);
+static bool glass_source_target_contains_self(struct glass_source *ctx,
+					      obs_source_t *target);
 
 /* =========================================================================
  * Shader-Parameter cachen (einmalig in create)
@@ -172,6 +189,12 @@ static void cache_params(struct glass_source *ctx)
 	ctx->p_shadow_offset_y      = GP("ShadowOffsetY");
 	ctx->p_shadow_blur          = GP("ShadowBlur");
 	ctx->p_shadow_opacity       = GP("ShadowOpacity");
+	ctx->p_enable_liquid_motion = GP("EnableLiquidMotion");
+	ctx->p_liquid_time          = GP("LiquidTime");
+	ctx->p_liquid_strength      = GP("LiquidStrength");
+	ctx->p_liquid_speed         = GP("LiquidSpeed");
+	ctx->p_liquid_depth         = GP("LiquidDepth");
+	ctx->p_liquid_seed          = GP("LiquidSeed");
 #undef GP
 }
 
@@ -220,9 +243,10 @@ static void *glass_source_create(obs_data_t *settings, obs_source_t *source)
 	cache_params(ctx);
 	obs_leave_graphics();
 
-	/* update() liest Settings initial ein */
-	/* Wird von OBS nach create() automatisch aufgerufen */
-	UNUSED_PARAMETER(settings);
+	/* OBS uebergibt gespeicherte Settings an create(), ruft update() hier
+	 * aber nicht automatisch auf. Daher initialisieren wir den Kontext
+	 * explizit mit denselben Regeln wie bei spaeteren UI-Aenderungen. */
+	glass_source_update(ctx, settings);
 	return ctx;
 }
 
@@ -243,15 +267,24 @@ static void glass_source_destroy(void *data)
 
 	obs_weak_source_release(old_target);
 	pthread_mutex_destroy(&ctx->target_mutex);
+	bfree(ctx->target_name);
 	bfree(ctx);
 }
 
-static void glass_source_update(void *data, obs_data_t *settings)
+static void glass_source_swap_target(struct glass_source *ctx,
+				     obs_weak_source_t *new_target)
 {
-	struct glass_source *ctx = data;
+	pthread_mutex_lock(&ctx->target_mutex);
+	obs_weak_source_t *old_target = ctx->target_weak;
+	ctx->target_weak = new_target;
+	pthread_mutex_unlock(&ctx->target_mutex);
 
-	/* Hintergrund-Source aktualisieren */
-	const char *target_name = obs_data_get_string(settings, "target_source");
+	obs_weak_source_release(old_target);
+}
+
+static bool glass_source_resolve_target(struct glass_source *ctx,
+					const char *target_name)
+{
 	obs_weak_source_t *new_target = NULL;
 
 	if (target_name && *target_name) {
@@ -271,11 +304,25 @@ static void glass_source_update(void *data, obs_data_t *settings)
 		}
 	}
 
-	pthread_mutex_lock(&ctx->target_mutex);
-	obs_weak_source_t *old_target = ctx->target_weak;
-	ctx->target_weak = new_target;
-	pthread_mutex_unlock(&ctx->target_mutex);
-	obs_weak_source_release(old_target);
+	glass_source_swap_target(ctx, new_target);
+	return new_target != NULL || !target_name || !*target_name;
+}
+
+static void glass_source_update_target_name(struct glass_source *ctx,
+					    const char *target_name)
+{
+	bfree(ctx->target_name);
+	ctx->target_name = bstrdup(target_name ? target_name : "");
+	glass_source_resolve_target(ctx, ctx->target_name);
+}
+
+static void glass_source_update(void *data, obs_data_t *settings)
+{
+	struct glass_source *ctx = data;
+
+	/* Hintergrund-Source aktualisieren */
+	const char *target_name = obs_data_get_string(settings, "target_source");
+	glass_source_update_target_name(ctx, target_name);
 
 	/* Alle Glass-Parameter einlesen */
 	ctx->pos_x                = (float)obs_data_get_double(settings, "pos_x");
@@ -320,6 +367,19 @@ static void glass_source_update(void *data, obs_data_t *settings)
 	ctx->shadow_offset_y      = (float)obs_data_get_double(settings, "shadow_offset_y");
 	ctx->shadow_blur          = (float)obs_data_get_double(settings, "shadow_blur");
 	ctx->shadow_opacity       = (float)obs_data_get_double(settings, "shadow_opacity");
+	ctx->enable_liquid_motion = obs_data_get_bool(settings, "enable_liquid_motion");
+	ctx->liquid_strength      = (float)obs_data_get_double(settings, "liquid_strength");
+	ctx->liquid_speed         = (float)obs_data_get_double(settings, "liquid_speed");
+	ctx->liquid_depth         = (float)obs_data_get_double(settings, "liquid_depth");
+	ctx->liquid_seed          = (float)obs_data_get_int(settings, "liquid_seed");
+}
+
+static void glass_source_load(void *data, obs_data_t *settings)
+{
+	/* OBS ruft load() erst auf, nachdem alle Sources der Collection erzeugt
+	 * wurden. Dadurch werden gespeicherte Hintergrund-Quellen stabiler
+	 * wiedergefunden als im fruehen create/update-Pfad. */
+	glass_source_update(data, settings);
 }
 
 /* =========================================================================
@@ -328,6 +388,7 @@ static void glass_source_update(void *data, obs_data_t *settings)
 
 static void glass_source_defaults(obs_data_t *settings)
 {
+	obs_data_set_default_string(settings, "source_search", "");
 	obs_data_set_default_string(settings, "target_source", "");
 	obs_data_set_default_double(settings, "pos_x",                960.0);
 	obs_data_set_default_double(settings, "pos_y",                540.0);
@@ -371,6 +432,12 @@ static void glass_source_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "shadow_offset_y",        5.0);
 	obs_data_set_default_double(settings, "shadow_blur",           10.0);
 	obs_data_set_default_double(settings, "shadow_opacity",         0.5);
+	obs_data_set_default_bool(  settings, "enable_liquid_motion", false);
+	obs_data_set_default_string(settings, "liquid_preset",       "custom");
+	obs_data_set_default_double(settings, "liquid_strength",        0.0);
+	obs_data_set_default_double(settings, "liquid_speed",           0.35);
+	obs_data_set_default_double(settings, "liquid_depth",           0.45);
+	obs_data_set_default_int(   settings, "liquid_seed",               0);
 }
 
 /* =========================================================================
@@ -430,7 +497,7 @@ static bool icontains(const char *hay, const char *needle)
 	if (nn > hn)
 		return false;
 	for (size_t i = 0; i <= hn - nn; i++) {
-		if (_strnicmp(hay + i, needle, nn) == 0)
+		if (astrcmpi_n(hay + i, needle, nn) == 0)
 			return true;
 	}
 	return false;
@@ -471,6 +538,72 @@ static bool on_source_search_changed(void *priv, obs_properties_t *props,
 	const char *self_name = ctx ? obs_source_get_name(ctx->source) : NULL;
 	populate_sources_filtered(list, filter, self_name);
 	return true;
+}
+
+static void glass_source_get_center(struct glass_source *ctx, double *x, double *y)
+{
+	uint32_t width = ctx->width ? ctx->width : 1920;
+	uint32_t height = ctx->height ? ctx->height : 1080;
+	obs_source_t *target = glass_source_get_target(ctx);
+
+	if (target) {
+		uint32_t target_w = obs_source_get_width(target);
+		uint32_t target_h = obs_source_get_height(target);
+
+		if (target_w > 0)
+			width = target_w;
+		if (target_h > 0)
+			height = target_h;
+
+		obs_source_release(target);
+	}
+
+	*x = (double)width / 2.0;
+	*y = (double)height / 2.0;
+}
+
+static bool glass_source_set_center(struct glass_source *ctx, bool set_x, bool set_y)
+{
+	if (!ctx || !ctx->source)
+		return false;
+
+	double center_x;
+	double center_y;
+	glass_source_get_center(ctx, &center_x, &center_y);
+
+	obs_data_t *settings = obs_source_get_settings(ctx->source);
+	if (set_x)
+		obs_data_set_double(settings, "pos_x", center_x);
+	if (set_y)
+		obs_data_set_double(settings, "pos_y", center_y);
+
+	obs_source_update(ctx->source, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+static bool on_center_x_clicked(obs_properties_t *props, obs_property_t *p,
+				void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	return glass_source_set_center(data, true, false);
+}
+
+static bool on_center_y_clicked(obs_properties_t *props, obs_property_t *p,
+				void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	return glass_source_set_center(data, false, true);
+}
+
+static bool on_center_both_clicked(obs_properties_t *props, obs_property_t *p,
+				   void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	return glass_source_set_center(data, true, true);
 }
 
 /* Sichtbarkeits-Callbacks fuer bedingte Gruppen */
@@ -529,28 +662,111 @@ static bool on_enable_shadow_changed(obs_properties_t *props,
 	return true;
 }
 
+struct liquid_preset_values {
+	const char *id;
+	double strength;
+	double speed;
+	double depth;
+};
+
+static const struct liquid_preset_values *find_liquid_preset(const char *id)
+{
+	static const struct liquid_preset_values presets[] = {
+		{"aurora_drift", 0.45, 0.28, 0.45},
+		{"crystal_warp", 0.52, 0.36, 0.55},
+		{"heat_haze", 0.58, 0.48, 0.62},
+		{"deep_ripple", 0.70, 0.42, 0.75},
+	};
+
+	if (!id || !*id)
+		return NULL;
+
+	for (size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); i++) {
+		if (strcmp(id, presets[i].id) == 0)
+			return &presets[i];
+	}
+
+	return NULL;
+}
+
+static bool apply_liquid_preset_to_settings(obs_data_t *settings,
+					    const char *preset_id)
+{
+	const struct liquid_preset_values *preset =
+		find_liquid_preset(preset_id);
+
+	if (!preset)
+		return false;
+
+	obs_data_set_bool(settings, "enable_liquid_motion", true);
+	obs_data_set_double(settings, "liquid_strength", preset->strength);
+	obs_data_set_double(settings, "liquid_speed", preset->speed);
+	obs_data_set_double(settings, "liquid_depth", preset->depth);
+	return true;
+}
+
+static void reset_custom_liquid_motion_settings(obs_data_t *settings)
+{
+	obs_data_set_bool(settings, "enable_liquid_motion", false);
+	obs_data_set_double(settings, "liquid_strength", 0.0);
+	obs_data_set_double(settings, "liquid_speed", 0.35);
+	obs_data_set_double(settings, "liquid_depth", 0.45);
+	obs_data_set_int(settings, "liquid_seed", 0);
+}
+
+static bool on_liquid_preset_changed(obs_properties_t *props,
+				     obs_property_t *p, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	const char *preset = obs_data_get_string(settings, "liquid_preset");
+	return apply_liquid_preset_to_settings(settings, preset);
+}
+
+static bool on_reset_liquid_preset_clicked(obs_properties_t *props,
+					   obs_property_t *p, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+
+	struct glass_source *ctx = data;
+	if (!ctx || !ctx->source)
+		return false;
+
+	obs_data_t *settings = obs_source_get_settings(ctx->source);
+	const char *preset = obs_data_get_string(settings, "liquid_preset");
+	if (!apply_liquid_preset_to_settings(settings, preset))
+		reset_custom_liquid_motion_settings(settings);
+	obs_source_update(ctx->source, settings);
+	obs_data_release(settings);
+	return true;
+}
+
 static obs_properties_t *glass_source_properties(void *data)
 {
 	struct glass_source *ctx = data;
 	obs_properties_t *props = obs_properties_create();
+	obs_properties_t *current_props = props;
 
 #define TEXT(key) obs_module_text(key)
 #define SLIDER_F(key, label, min, max, step) \
-	obs_properties_add_float_slider(props, key, TEXT(label), min, max, step)
+	obs_properties_add_float_slider(current_props, key, TEXT(label), min, max, step)
 #define SLIDER_I(key, label, min, max, step) \
-	obs_properties_add_int_slider(props, key, TEXT(label), min, max, step)
+	obs_properties_add_int_slider(current_props, key, TEXT(label), min, max, step)
 #define CHECK(key, label) \
-	obs_properties_add_bool(props, key, TEXT(label))
+	obs_properties_add_bool(current_props, key, TEXT(label))
 #define COLOR(key, label) \
-	obs_properties_add_color_alpha(props, key, TEXT(label))
+	obs_properties_add_color_alpha(current_props, key, TEXT(label))
 
 	/* --- Suchfeld + Hintergrund-Source (alphabetisch sortiert, inkl. Szenen) --- */
+	obs_properties_t *background_props = obs_properties_create();
+	current_props = background_props;
 	obs_property_t *search = obs_properties_add_text(
-		props, "source_search", TEXT("SourceSearch"), OBS_TEXT_DEFAULT);
+		current_props, "source_search", TEXT("SourceSearch"), OBS_TEXT_DEFAULT);
 	obs_property_set_modified_callback2(search, on_source_search_changed, ctx);
 
 	obs_property_t *src_list = obs_properties_add_list(
-		props, "target_source", TEXT("TargetSource"),
+		current_props, "target_source", TEXT("TargetSource"),
 		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
 	/* Initiale Befuellung mit gespeichertem Filter */
@@ -561,39 +777,75 @@ static obs_properties_t *glass_source_properties(void *data)
 		populate_sources_filtered(src_list, f, self_name);
 		if (s) obs_data_release(s);
 	}
+	obs_properties_add_group(props, "background_section",
+				 TEXT("BackgroundSection"),
+				 OBS_GROUP_NORMAL, background_props);
 
 	/* --- Globale Einstellungen --- */
+	obs_properties_t *position_props = obs_properties_create();
+	current_props = position_props;
 	SLIDER_F("pos_x",         "PositionX",          -10000.0, 10000.0, 1.0);
 	SLIDER_F("pos_y",         "PositionY",          -10000.0, 10000.0, 1.0);
+	obs_properties_add_button2(current_props, "center_x", TEXT("CenterX"),
+				   on_center_x_clicked, ctx);
+	obs_properties_add_button2(current_props, "center_y", TEXT("CenterY"),
+				   on_center_y_clicked, ctx);
+	obs_properties_add_button2(current_props, "center_both", TEXT("CenterBoth"),
+				   on_center_both_clicked, ctx);
 	CHECK(   "transparent_bg","TransparentBg");
+	obs_properties_add_group(props, "position_section",
+				 TEXT("PositionSection"),
+				 OBS_GROUP_NORMAL, position_props);
 
 	/* --- Form-Definition --- */
+	obs_properties_t *shape_props = obs_properties_create();
+	current_props = shape_props;
 	SLIDER_F("shape_width",   "ShapeWidth",          0.0, 4096.0, 1.0);
 	SLIDER_F("shape_height",  "ShapeHeight",         0.0, 4096.0, 1.0);
 	SLIDER_F("corner_radius", "CornerRadius",        0.0, 2048.0, 1.0);
 	SLIDER_F("feathering",    "Feathering",          0.0,   50.0, 0.01);
+	obs_properties_add_group(props, "shape_section",
+				 TEXT("ShapeSection"),
+				 OBS_GROUP_NORMAL, shape_props);
 
 	/* --- Glaseffekte --- */
+	obs_properties_t *material_props = obs_properties_create();
+	current_props = material_props;
 	SLIDER_I("blur_strength", "BlurStrength",        0,     2,    1);
 	SLIDER_F("blur_intensity","BlurIntensity",        0.1,   5.0, 0.1);
 	SLIDER_F("frost_strength","FrostStrength",        0.0,  20.0, 0.01);
-	obs_properties_add_color(props, "tint_color", TEXT("TintColor"));
+	obs_properties_add_color(current_props, "tint_color", TEXT("TintColor"));
 	SLIDER_F("tint_strength", "TintStrength",         0.0,   1.0, 0.01);
+	obs_properties_add_group(props, "glass_material_section",
+				 TEXT("GlassMaterialSection"),
+				 OBS_GROUP_NORMAL, material_props);
 
 	/* --- Linsenverzerrung --- */
+	obs_properties_t *lens_props = obs_properties_create();
+	current_props = lens_props;
 	SLIDER_F("distortion_thickness","DistortionThickness", 0.0, 500.0, 1.0);
 	SLIDER_F("max_distortion",      "MaxDistortion",      -2.0,   2.0, 0.01);
 	SLIDER_F("distortion_falloff",  "DistortionFalloff",   0.1,  10.0, 0.01);
 	SLIDER_F("magnification",       "Magnification",       0.1,   5.0, 0.01);
+	obs_properties_add_group(props, "lens_distortion_section",
+				 TEXT("LensDistortionSection"),
+				 OBS_GROUP_NORMAL, lens_props);
 
 	/* --- Chromatische Aberration --- */
+	obs_properties_t *ca_props = obs_properties_create();
+	current_props = ca_props;
 	obs_property_t *ca_chk = CHECK("enable_ca", "EnableCA");
 	obs_property_set_modified_callback(ca_chk, on_enable_ca_changed);
 	SLIDER_F("ca_strength",  "CAStrength",  0.0, 30.0, 0.1);
 	SLIDER_F("ca_thickness", "CAThickness", 0.0, 500.0, 1.0);
 	SLIDER_F("ca_falloff",   "CAFalloff",   0.1, 10.0, 0.1);
+	obs_properties_add_group(props, "chromatic_aberration_section",
+				 TEXT("ChromaticAberrationSection"),
+				 OBS_GROUP_NORMAL, ca_props);
 
 	/* --- Aeusseres Leuchten --- */
+	obs_properties_t *outer_glow_props = obs_properties_create();
+	current_props = outer_glow_props;
 	obs_property_t *glow_chk = CHECK("enable_glow", "EnableGlow");
 	obs_property_set_modified_callback(glow_chk, on_enable_glow_changed);
 	COLOR(   "glow_color",     "GlowColor");
@@ -603,8 +855,13 @@ static obs_properties_t *glass_source_properties(void *data)
 	SLIDER_F("glow_angle",     "GlowAngle",       0.0, 360.0, 1.0);
 	SLIDER_F("glow_spread_deg","GlowSpreadDeg",  10.0, 180.0, 1.0);
 	SLIDER_F("glow_softness",  "GlowSoftness",    0.0,   1.0, 0.01);
+	obs_properties_add_group(props, "outer_glow_section",
+				 TEXT("OuterGlowSection"),
+				 OBS_GROUP_NORMAL, outer_glow_props);
 
 	/* --- Inneres Leuchten --- */
+	obs_properties_t *inner_glow_props = obs_properties_create();
+	current_props = inner_glow_props;
 	obs_property_t *ig_chk = CHECK("enable_inner_glow", "EnableInnerGlow");
 	obs_property_set_modified_callback(ig_chk, on_enable_inner_glow_changed);
 	COLOR(   "inner_glow_color",      "InnerGlowColor");
@@ -614,8 +871,13 @@ static obs_properties_t *glass_source_properties(void *data)
 	SLIDER_F("inner_glow_angle",      "InnerGlowAngle",       0.0, 360.0, 1.0);
 	SLIDER_F("inner_glow_spread_deg", "InnerGlowSpreadDeg",  10.0, 180.0, 1.0);
 	SLIDER_F("inner_glow_softness",   "InnerGlowSoftness",    0.0,   1.0, 0.01);
+	obs_properties_add_group(props, "inner_glow_section",
+				 TEXT("InnerGlowSection"),
+				 OBS_GROUP_NORMAL, inner_glow_props);
 
 	/* --- Schlagschatten --- */
+	obs_properties_t *shadow_props = obs_properties_create();
+	current_props = shadow_props;
 	obs_property_t *sh_chk = CHECK("enable_shadow", "EnableShadow");
 	obs_property_set_modified_callback(sh_chk, on_enable_shadow_changed);
 	COLOR(   "shadow_color",    "ShadowColor");
@@ -623,6 +885,43 @@ static obs_properties_t *glass_source_properties(void *data)
 	SLIDER_F("shadow_offset_y", "ShadowOffsetY", -500.0, 500.0, 1.0);
 	SLIDER_F("shadow_blur",     "ShadowBlur",       0.0, 200.0, 1.0);
 	SLIDER_F("shadow_opacity",  "ShadowOpacity",    0.0,   1.0, 0.01);
+	obs_properties_add_group(props, "drop_shadow_section",
+				 TEXT("DropShadowSection"),
+				 OBS_GROUP_NORMAL, shadow_props);
+
+	/* --- Liquid Motion --- */
+	obs_properties_t *motion_props = obs_properties_create();
+	obs_properties_add_bool(motion_props, "enable_liquid_motion",
+				TEXT("EnableLiquidMotion"));
+	obs_property_t *liquid_preset = obs_properties_add_list(
+		motion_props, "liquid_preset", TEXT("LiquidPreset"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(liquid_preset,
+				     TEXT("LiquidPresetCustom"), "custom");
+	obs_property_list_add_string(liquid_preset,
+				     TEXT("LiquidPresetAuroraDrift"), "aurora_drift");
+	obs_property_list_add_string(liquid_preset,
+				     TEXT("LiquidPresetCrystalWarp"), "crystal_warp");
+	obs_property_list_add_string(liquid_preset,
+				     TEXT("LiquidPresetHeatHaze"), "heat_haze");
+	obs_property_list_add_string(liquid_preset,
+				     TEXT("LiquidPresetDeepRipple"), "deep_ripple");
+	obs_property_set_modified_callback(liquid_preset,
+					   on_liquid_preset_changed);
+	obs_properties_add_button2(motion_props, "reset_liquid_preset",
+				   TEXT("ResetLiquidPreset"),
+				   on_reset_liquid_preset_clicked, ctx);
+	obs_properties_add_float_slider(motion_props, "liquid_strength",
+					TEXT("LiquidStrength"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(motion_props, "liquid_speed",
+					TEXT("LiquidSpeed"), 0.0, 2.0, 0.01);
+	obs_properties_add_float_slider(motion_props, "liquid_depth",
+					TEXT("LiquidDepth"), 0.0, 1.0, 0.01);
+	obs_properties_add_int_slider(motion_props, "liquid_seed",
+				      TEXT("LiquidSeed"), 0, 9999, 1);
+	obs_properties_add_group(props, "liquid_motion_section",
+				 TEXT("LiquidMotionSection"),
+				 OBS_GROUP_NORMAL, motion_props);
 
 #undef TEXT
 #undef SLIDER_F
@@ -667,8 +966,38 @@ static void glass_source_enum_active_sources(void *data,
 	obs_source_t *target = glass_source_get_target(ctx);
 
 	if (target) {
-		enum_callback(ctx->source, target, param);
+		/* If the selected scene/group contains this Glass source, reporting
+		 * that target here makes OBS reject the scene item as a source-cycle
+		 * during load. Rendering is still protected by ctx->rendering. */
+		if (!glass_source_target_contains_self(ctx, target))
+			enum_callback(ctx->source, target, param);
 		obs_source_release(target);
+	}
+}
+
+static bool glass_source_target_contains_self(struct glass_source *ctx,
+					      obs_source_t *target)
+{
+	const char *self_name = obs_source_get_name(ctx->source);
+	obs_scene_t *scene = obs_group_or_scene_from_source(target);
+
+	if (!scene || !self_name || !*self_name)
+		return false;
+
+	return obs_scene_find_source_recursive(scene, self_name) != NULL;
+}
+
+static void glass_source_video_tick(void *data, float seconds)
+{
+	struct glass_source *ctx = data;
+
+	if (!ctx || seconds <= 0.0f)
+		return;
+
+	if (ctx->enable_liquid_motion && ctx->liquid_strength > 0.0f) {
+		ctx->liquid_time += seconds;
+		if (ctx->liquid_time > 10000.0f)
+			ctx->liquid_time -= 10000.0f;
 	}
 }
 
@@ -798,6 +1127,17 @@ static void glass_source_render(void *data, gs_effect_t *effect)
 	gs_effect_set_float(ctx->p_shadow_blur,     ctx->shadow_blur);
 	gs_effect_set_float(ctx->p_shadow_opacity,  ctx->shadow_opacity);
 
+	bool liquid_enabled = ctx->enable_liquid_motion &&
+		ctx->liquid_strength > 0.0f &&
+		ctx->liquid_depth > 0.0f;
+	gs_effect_set_bool( ctx->p_enable_liquid_motion, liquid_enabled);
+	gs_effect_set_float(ctx->p_liquid_time,          ctx->liquid_time);
+	gs_effect_set_float(ctx->p_liquid_strength,
+			    liquid_enabled ? ctx->liquid_strength : 0.0f);
+	gs_effect_set_float(ctx->p_liquid_speed,         ctx->liquid_speed);
+	gs_effect_set_float(ctx->p_liquid_depth,         ctx->liquid_depth);
+	gs_effect_set_float(ctx->p_liquid_seed,          ctx->liquid_seed);
+
 	/* Alpha-Blending fuer korrekte Transparenz */
 	gs_blend_state_push();
 	gs_reset_blend_state();
@@ -821,10 +1161,12 @@ struct obs_source_info glass_source_info = {
 	.create         = glass_source_create,
 	.destroy        = glass_source_destroy,
 	.update         = glass_source_update,
+	.load           = glass_source_load,
 	.get_defaults   = glass_source_defaults,
 	.get_properties = glass_source_properties,
 	.get_width      = glass_source_get_width,
 	.get_height     = glass_source_get_height,
+	.video_tick     = glass_source_video_tick,
 	.video_render   = glass_source_render,
 	.enum_active_sources = glass_source_enum_active_sources,
 	.icon_type      = OBS_ICON_TYPE_CUSTOM,

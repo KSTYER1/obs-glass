@@ -60,6 +60,13 @@ uniform float  ShadowOffsetY;
 uniform float  ShadowBlur;
 uniform float  ShadowOpacity;
 
+uniform bool   EnableLiquidMotion;
+uniform float  LiquidTime;
+uniform float  LiquidStrength;
+uniform float  LiquidSpeed;
+uniform float  LiquidDepth;
+uniform float  LiquidSeed;
+
 // =============================================================================
 // SAMPLER
 // =============================================================================
@@ -150,6 +157,24 @@ float get_angle_mask(float current_angle, float target, float spread, float soft
     return 1.0 - smoothstep(start, halfSpread, diff);
 }
 
+float2 apply_liquid_motion(float2 uv, float2 local_pos, float2 dim) {
+    if (!(EnableLiquidMotion && LiquidStrength > EPSILON)) return uv;
+    if (LiquidDepth <= EPSILON) return uv;
+
+    float scale = max(max(dim.x, dim.y), 1.0);
+    float2 q = local_pos / scale;
+    float t = LiquidTime * max(LiquidSpeed, 0.0);
+    float seed = LiquidSeed * 0.0137;
+
+    float wave1 = sin((q.x * 3.1 + q.y * 2.2 + seed) * 6.2831853 + t * 1.10);
+    float wave2 = cos((q.x * -2.4 + q.y * 3.7 + seed * 1.7) * 6.2831853 - t * 0.83);
+    float wave3 = sin((q.x + q.y + seed * 0.3) * 12.5663706 + t * 0.42);
+
+    float2 flow = float2(wave1 + wave2 * 0.50, wave2 - wave3 * 0.45);
+    float amount_px = LiquidStrength * LiquidDepth * 18.0;
+    return uv + flow * (amount_px / uv_size);
+}
+
 // =============================================================================
 // PIXEL SHADER (Glass-Logik, identisch mit lucid-glass.shader)
 // =============================================================================
@@ -223,6 +248,7 @@ float4 PSGlass(VertDataOut v_in) : TARGET
 
         float2 center_uv = pos / uv_size;
         float2 dist_uv   = (uv - center_uv) * total_zoom + center_uv;
+        dist_uv = apply_liquid_motion(dist_uv, p, dim);
 
         // Gauss-Blur + optionale chromatische Aberration
         int   radius = (BlurStrength == 0) ? 1 : ((BlurStrength == 1) ? 2 : 3);

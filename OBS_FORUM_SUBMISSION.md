@@ -6,7 +6,7 @@ Glass
 
 ## Version
 
-1.0.2
+1.1.0
 
 ## Category
 
@@ -20,7 +20,7 @@ shadow, overlay, source, lucidglass
 ## Short Tagline
 
 Placeable LucidGlass overlay source for OBS with blur, frost, distortion,
-glow, and shadow.
+glow, shadow, and cinematic liquid motion.
 
 ## Supported Bit Versions
 
@@ -40,7 +40,7 @@ https://github.com/KSTYER1/obs-glass
 
 ## Download URL
 
-https://github.com/KSTYER1/obs-glass/releases/tag/v1.0.2
+https://github.com/KSTYER1/obs-glass/releases/tag/v1.1.0
 
 ## Overview
 
@@ -68,6 +68,9 @@ searchable dropdown of every scene and source in the project.
 - Outer glow with optional bi-directional shaping (angle, spread, softness).
 - Inner glow with optional bi-directional shaping (angle, spread, softness).
 - Drop shadow with offset, blur, opacity, and color.
+- Liquid Motion Pack with cinematic Liquid Drift presets and simple strength,
+  speed, depth, and seed controls.
+- Grouped source properties for a cleaner settings UI.
 - Transparent-background mode so only the glass shape contributes to the
   canvas.
 - Searchable background-source picker with alphabetical scene and source list.
@@ -77,9 +80,9 @@ searchable dropdown of every scene and source in the project.
 
 Download the Windows x64 release. Two options:
 
-1. Run `obs-glass-1.0.2-installer.exe`. By default it installs into your OBS
+1. Run `obs-glass-1.1.0-installer.exe`. By default it installs into your OBS
    user plugin folder.
-2. Or extract `obs-glass-1.0.2-portable.zip` into your OBS Studio installation
+2. Or extract `obs-glass-1.1.0-portable.zip` into your OBS Studio installation
    folder.
 
 The final layout should include:
@@ -101,6 +104,33 @@ Restart OBS after installation. The source appears under `+ -> Glass`.
 4. Tune blur, frost, distortion, tint, glow, and shadow sliders to taste.
 5. Place the Glass source anywhere in the scene's source list to control its
    z-order on the canvas.
+
+## Version 1.1.0
+
+- Added Liquid Motion Pack with cinematic Liquid Drift presets: Aurora Drift,
+  Crystal Warp, Heat Haze, and Deep Ripple.
+- Added simple Liquid Motion controls for strength, speed, depth, and seed.
+- Grouped source properties into focused sections for a cleaner settings UI.
+- Keeps Liquid Motion disabled by default so existing saved Glass sources load
+  unchanged.
+
+## Version 1.0.4
+
+- Fixed reload restoration so saved Glass sources re-read their settings during
+  source creation and resolve their selected background source again after OBS
+  has created all sources in the scene collection.
+- Allows recursive scene-backed glass setups to load by keeping OBS'
+  active-source recursion guard from rejecting a Glass source whose selected
+  scene target contains that same Glass source.
+- Replaced a Windows-only source-search comparison with OBS' portable
+  case-insensitive string helper.
+
+## Version 1.0.3
+
+- Added Center X, Center Y, and Center Both buttons for quickly centering the
+  glass position against the selected background source.
+- Falls back to the last known output size when no background source is
+  available.
 
 ## Version 1.0.2
 
